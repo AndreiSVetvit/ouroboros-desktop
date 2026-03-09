@@ -28,6 +28,8 @@ from ouroboros.compat import (
     IS_WINDOWS, IS_MACOS,
     embedded_python_candidates, kill_process_on_port, force_kill_pid,
     git_install_hint,
+    create_kill_on_close_job, assign_pid_to_job, terminate_job, close_job,
+    resume_process,
 )
 
 # ---------------------------------------------------------------------------
@@ -326,13 +328,14 @@ def _install_deps() -> None:
 # Agent process management
 # ---------------------------------------------------------------------------
 _agent_proc: Optional[subprocess.Popen] = None
+_agent_job: Optional[object] = None          # Windows Job Object handle
 _agent_lock = threading.Lock()
 _shutdown_event = threading.Event()
 
 
 def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     """Start the agent server.py as a subprocess."""
-    global _agent_proc
+    global _agent_proc, _agent_job
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_DIR)
     env["OUROBOROS_SERVER_PORT"] = str(port)
@@ -349,14 +352,49 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     server_py = REPO_DIR / "server.py"
     log.info("Starting agent: %s %s (port=%d)", EMBEDDED_PYTHON, server_py, port)
 
-    proc = subprocess.Popen(
-        [EMBEDDED_PYTHON, str(server_py)],
+    popen_kwargs: dict = dict(
         cwd=str(REPO_DIR),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    if IS_WINDOWS:
+        from ouroboros.compat import _CREATE_SUSPENDED
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED
+        )
+
+    proc = subprocess.Popen([EMBEDDED_PYTHON, str(server_py)], **popen_kwargs)
     _agent_proc = proc
+
+    if IS_WINDOWS:
+        job = create_kill_on_close_job()
+        if job is None:
+            log.error(
+                "Failed to create Windows Job Object; refusing to run "
+                "without process-tree ownership."
+            )
+            proc.kill()
+            return proc
+        if not assign_pid_to_job(job, proc.pid):
+            log.error(
+                "Failed to assign agent pid %d to Windows Job Object; "
+                "refusing to run without process-tree ownership.",
+                proc.pid,
+            )
+            close_job(job)
+            proc.kill()
+            return proc
+        _agent_job = job
+        if not resume_process(proc.pid):
+            log.error("Failed to resume agent process %d — killing", proc.pid)
+            with _agent_lock:
+                if _agent_job is job:
+                    _agent_job = None
+            terminate_job(job)
+            close_job(job)
+            return proc
+        log.info("Agent pid %d assigned to Windows Job Object", proc.pid)
 
     # Stream agent stdout to log file in background
     def _stream_output():
@@ -376,22 +414,28 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
 
 def stop_agent() -> None:
     """Gracefully stop the agent process."""
-    global _agent_proc
+    global _agent_proc, _agent_job
     with _agent_lock:
         if _agent_proc is None:
             return
         proc = _agent_proc
+        job = _agent_job
+        _agent_proc = None
+        _agent_job = None
     log.info("Stopping agent (pid=%s)...", proc.pid)
     try:
         proc.terminate()
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if IS_WINDOWS and job is not None:
+            terminate_job(job)
+        else:
+            proc.kill()
         proc.wait(timeout=5)
     except Exception:
         pass
-    with _agent_lock:
-        _agent_proc = None
+    if IS_WINDOWS and job is not None:
+        close_job(job)
 
 
 def _read_port_file() -> int:
@@ -445,6 +489,7 @@ _webview_window = None  # set by main(), used by lifecycle loop
 
 def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
     """Main loop: start agent, monitor, restart on exit code 42 or crash."""
+    global _agent_proc, _agent_job
     crash_times: list = []
 
     # Kill anything left over from a previous launcher session
@@ -470,6 +515,9 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
 
         with _agent_lock:
             _agent_proc = None
+            if IS_WINDOWS and _agent_job is not None:
+                close_job(_agent_job)
+                _agent_job = None
 
         if _shutdown_event.is_set():
             break
@@ -772,12 +820,36 @@ def main():
     lifecycle_thread.start()
 
     # Wait for server to be ready, then read actual port (may differ if default was busy)
-    _wait_for_server(port, timeout=15)
+    server_ready = _wait_for_server(port, timeout=15)
     actual_port = _read_port_file()
     if actual_port != port:
-        _wait_for_server(actual_port, timeout=45)
+        server_ready = _wait_for_server(actual_port, timeout=45)
     else:
-        _wait_for_server(port, timeout=45)
+        server_ready = server_ready or _wait_for_server(port, timeout=45)
+
+    if not server_ready:
+        log.error("Agent failed to become healthy on port %d; aborting UI startup.", actual_port)
+        _shutdown_event.set()
+        stop_agent()
+        lifecycle_thread.join(timeout=5)
+        webview.create_window(
+            "Ouroboros — Startup Failed",
+            html=(
+                "<html><body style='background:#1a1a2e;color:white;font-family:system-ui;"
+                "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+                "<div style='text-align:center;max-width:460px;padding:24px'>"
+                "<h2>Ouroboros failed to start</h2>"
+                "<p>The local agent server did not become ready.</p>"
+                "<p style='color:#94a3b8;font-size:13px;margin-top:10px'>"
+                "Check launcher.log and agent_stdout.log in the Ouroboros data directory "
+                "for details.</p>"
+                "</div></body></html>"
+            ),
+            width=520,
+            height=260,
+        )
+        webview.start()
+        return
 
     url = f"http://127.0.0.1:{actual_port}"
 
