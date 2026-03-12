@@ -326,7 +326,14 @@ class LLMClient:
         tool_calls = []
         for i, raw in enumerate(matches):
             try:
-                obj = json.loads(raw)
+                raw_stripped = raw.strip()
+                try:
+                    obj = json.loads(raw_stripped)
+                except json.JSONDecodeError:
+                    if raw_stripped.startswith("{{") and raw_stripped.endswith("}}"):
+                        obj = json.loads(raw_stripped[1:-1])
+                    else:
+                        raise
                 if not isinstance(obj, dict):
                     raise ValueError("tool_call payload must be an object")
                 name = str(obj.get("name", "")).strip()
