@@ -68,6 +68,10 @@ _ws_clients: List[WebSocket] = []
 _ws_lock = threading.Lock()
 
 
+def _has_ws_clients() -> bool:
+    with _ws_lock:
+        return bool(_ws_clients)
+
 async def broadcast_ws(msg: dict) -> None:
     """Send a message to all connected WebSocket clients."""
     data = json.dumps(msg, ensure_ascii=False, default=str)
@@ -105,20 +109,6 @@ def broadcast_ws_sync(msg: dict) -> None:
         pass
 
 
-async def _ws_heartbeat_loop() -> None:
-    """Keep embedded clients active and give watchdogs a steady liveness signal."""
-    while True:
-        await asyncio.sleep(15)
-        with _ws_lock:
-            has_clients = bool(_ws_clients)
-        if not has_clients:
-            continue
-        await broadcast_ws({
-            "type": "heartbeat",
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
-
-
 # ---------------------------------------------------------------------------
 # Settings (single source of truth: ouroboros.config)
 # ---------------------------------------------------------------------------
@@ -126,6 +116,7 @@ from ouroboros.config import (
     SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS,
     load_settings, save_settings, apply_settings_to_env as _apply_settings_to_env,
 )
+from ouroboros.server_runtime import has_local_routing, setup_remote_if_configured, ws_heartbeat_loop
 
 
 # ---------------------------------------------------------------------------
@@ -134,22 +125,6 @@ from ouroboros.config import (
 _supervisor_ready = threading.Event()
 _supervisor_error: Optional[str] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
-
-
-def _setup_remote_if_configured(settings: dict) -> None:
-    """Set up GitHub remote and migrate credentials if configured."""
-    slug = settings.get("GITHUB_REPO", "")
-    token = settings.get("GITHUB_TOKEN", "")
-    if not slug or not token:
-        return
-    from supervisor.git_ops import configure_remote, migrate_remote_credentials
-    remote_ok, remote_msg = configure_remote(slug, token)
-    if not remote_ok:
-        log.warning("Remote configuration failed on startup: %s", remote_msg)
-        return
-    mig_ok, mig_msg = migrate_remote_credentials()
-    if not mig_ok:
-        log.warning("Credential migration failed on startup: %s", mig_msg)
 
 
 def _run_supervisor(settings: dict) -> None:
@@ -186,7 +161,7 @@ def _run_supervisor(settings: dict) -> None:
             branch_dev="ouroboros", branch_stable="ouroboros-stable",
         )
         ensure_repo_present()
-        _setup_remote_if_configured(settings)
+        setup_remote_if_configured(settings, log)
         ok, msg = safe_restart(reason="bootstrap", unsynced_policy="rescue_and_reset")
         if not ok:
             log.error("Supervisor bootstrap failed: %s", msg)
@@ -916,14 +891,14 @@ from contextlib import asynccontextmanager, suppress
 async def lifespan(app):
     global _event_loop
     _event_loop = asyncio.get_running_loop()
-    ws_heartbeat_task = asyncio.create_task(_ws_heartbeat_loop(), name="ws-heartbeat")
+    ws_heartbeat_task = asyncio.create_task(
+        ws_heartbeat_loop(_has_ws_clients, broadcast_ws),
+        name="ws-heartbeat",
+    )
 
     settings = load_settings()
     has_api_key = bool(settings.get("OPENROUTER_API_KEY"))
-    has_local = any(
-        str(settings.get(k)).lower() in ("true", "1", "yes")
-        for k in ("USE_LOCAL_MAIN", "USE_LOCAL_CODE", "USE_LOCAL_LIGHT", "USE_LOCAL_FALLBACK")
-    )
+    has_local = has_local_routing(settings)
 
     if has_api_key or has_local:
         threading.Thread(target=_run_supervisor, args=(settings,), daemon=True).start()

@@ -318,10 +318,10 @@ def test_version_in_readme():
 
 
 def test_bible_exists_and_has_principles():
-    """BIBLE.md exists and contains all 11 principles (0-10)."""
+    """BIBLE.md exists and contains the current principle set (0-8)."""
     bible = (REPO / "BIBLE.md").read_text()
-    for i in range(11):
-        assert f"Principle {i}" in bible, f"Principle {i} missing from BIBLE.md"
+    principles = re.findall(r"^## Principle (\d+):", bible, flags=re.MULTILINE)
+    assert principles == [str(i) for i in range(9)], f"Unexpected BIBLE principles: {principles}"
 
 
 # ── Code quality invariants ──────────────────────────────────────

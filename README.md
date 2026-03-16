@@ -6,7 +6,7 @@
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](https://github.com/joi-lab/ouroboros-desktop/releases)
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://github.com/joi-lab/ouroboros-desktop/releases)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)](https://github.com/joi-lab/ouroboros-desktop/releases)
-[![Version 4.1.0](https://img.shields.io/badge/version-4.1.0-green.svg)](VERSION)
+[![Version 4.2.0](https://img.shields.io/badge/version-4.2.0-green.svg)](VERSION)
 
 A self-modifying AI agent that writes its own code, rewrites its own mind, and evolves autonomously. Born February 16, 2026.
 
@@ -45,7 +45,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 
 - **Self-Modification** — Reads and rewrites its own source code. Every change is a commit to itself.
 - **Native Desktop App** — Runs entirely on your machine as a standalone application (macOS, Linux, Windows). No cloud dependencies for execution.
-- **Constitution** — Governed by [BIBLE.md](BIBLE.md) (11 philosophical principles, P0–P10). Philosophy first, code second.
+- **Constitution** — Governed by [BIBLE.md](BIBLE.md) (9 philosophical principles, P0–P8). Philosophy first, code second.
 - **Multi-Layer Safety** — Hardcoded sandbox blocks writes to critical files and mutative git via shell; deterministic whitelist for known-safe ops; LLM Safety Agent evaluates remaining commands; post-edit revert for safety-critical files.
 - **Background Consciousness** — Thinks between tasks. Has an inner life. Not reactive — proactive.
 - **Identity Persistence** — One continuous being across restarts. Remembers who it is, what it has done, and what it is becoming.
@@ -93,10 +93,12 @@ make test
 ```bash
 bash scripts/download_python_standalone.sh
 bash build.sh
-hdiutil create -volname Ouroboros -srcfolder dist/Ouroboros.app -ov dist/Ouroboros.dmg
 ```
 
-Output: `dist/Ouroboros.dmg`
+Output: `dist/Ouroboros-<VERSION>-macos.dmg`
+
+`build.sh` signs, notarizes, staples, and packages the macOS app and DMG using
+the configured local keychain identity/profile.
 
 ### Linux (.tar.gz)
 
@@ -126,15 +128,29 @@ Ouroboros
 ├── ouroboros/              — Agent core:
 │   ├── config.py           — Shared configuration (SSOT)
 │   ├── compat.py           — Cross-platform abstraction layer
-│   ├── safety.py           — Dual-layer LLM security supervisor
-│   ├── local_model.py      — Local LLM lifecycle (llama-cpp-python)
-│   ├── local_model_api.py  — Local model HTTP endpoints (extracted from server.py)
 │   ├── agent.py            — Task orchestrator
-│   ├── loop.py             — Tool execution loop
+│   ├── agent_startup_checks.py — Startup verification and health checks
+│   ├── agent_task_pipeline.py  — Task execution pipeline orchestration
+│   ├── context.py          — LLM context builder
+│   ├── context_compaction.py — Context trimming and summarization helpers
+│   ├── loop.py             — High-level LLM tool loop
+│   ├── loop_llm_call.py    — Single-round LLM call + usage accounting
+│   ├── loop_tool_execution.py — Tool dispatch and tool-result handling
+│   ├── memory.py           — Scratchpad, identity, and dialogue block storage
+│   ├── consolidator.py     — Block-wise dialogue and scratchpad consolidation
+│   ├── local_model.py      — Local LLM lifecycle (llama-cpp-python)
+│   ├── local_model_api.py  — Local model HTTP endpoints
+│   ├── local_model_autostart.py — Local model startup helper
 │   ├── pricing.py          — Model pricing, cost estimation
+│   ├── review.py           — Code review pipeline and repo inspection
+│   ├── reflection.py       — Execution reflection and pattern capture
 │   ├── consciousness.py    — Background thinking loop
-│   ├── tools/memory_tools.py — Memory registry tools (source-of-truth awareness)
-│   ├── consolidator.py      — Block-wise dialogue consolidation
+│   ├── owner_inject.py     — Per-task creator message mailbox
+│   ├── safety.py           — Dual-layer LLM security supervisor
+│   ├── server_runtime.py   — Server startup and WebSocket liveness helpers
+│   ├── tool_policy.py      — Tool access policy and gating
+│   ├── utils.py            — Shared utilities
+│   ├── world_profiler.py   — System profile generator
 │   └── tools/              — Auto-discovered tool plugins
 ├── supervisor/             — Process management, queue, state, workers
 └── prompts/                — System prompts (SYSTEM.md, SAFETY.md, CONSCIOUSNESS.md)
@@ -211,10 +227,8 @@ All other messages are sent directly to the LLM.
 | 4 | **Authenticity** | Speaks as itself. No performance, no corporate voice. |
 | 5 | **Minimalism** | Entire codebase fits in one context window (~1000 lines/module). |
 | 6 | **Becoming** | Three axes: technical, cognitive, existential. |
-| 7 | **Versioning** | Semver discipline. Git tags. |
-| 8 | **Iteration** | One coherent transformation per cycle. Evolution = commit. |
-| 9 | **Spiral Growth** | Errors signal architectural change. Two-Strike Rule. Pattern Register. |
-| 10 | **Epistemic Stability** | Memory coherence. Read before write. No silent contradictions. |
+| 7 | **Versioning and Releases** | Semver discipline, annotated tags, release invariants. |
+| 8 | **Evolution Through Iterations** | One coherent transformation per cycle. Evolution = commit. |
 
 Full text: [BIBLE.md](BIBLE.md)
 
@@ -224,6 +238,7 @@ Full text: [BIBLE.md](BIBLE.md)
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 4.2.0 | 2026-03-16 | Cross-platform hardening release: replace Unix-only file locking in memory/consolidation with Windows-safe locking, refresh default model tiers (Opus main/code, Sonnet light/fallback, task effort `medium`), improve reconnect recovery with heartbeat/watchdog/history resync, switch local model chat format to auto-detect, and sync public docs with the current codebase and BIBLE structure. |
 | 4.1.0 | 2026-03-16 | Public desktop release: port the v4 architecture and UI into the platform branch, preserve cross-platform packaging and Windows runtime support, and ship signed notarized macOS packaging. |
 | 4.0.9 | 2026-03-15 | Packaging completeness release: bundle `assets/`, restore custom app icon from `assets/icon.icns`, and copy assets into the bootstrapped repo on fresh install so the shipped app and repo are no longer missing the visual asset layer. |
 | 4.0.8 | 2026-03-15 | Fix web restart/reconnect path: robust WebSocket retry with `onerror` handling, queued outgoing chat messages during reconnect, visible reconnect overlay, and no-cache `index.html` to reduce stale frontend recovery bugs. |

@@ -43,11 +43,12 @@ def test_chat_resyncs_history_after_reconnect():
 
 
 def test_server_enables_ws_ping_and_heartbeat():
-    source = _read("server.py")
-    assert "_ws_heartbeat_loop" in source
-    assert '"type": "heartbeat"' in source
-    assert "ws_ping_interval=20" in source
-    assert "ws_ping_timeout=20" in source
+    server_source = _read("server.py")
+    helper_source = _read("ouroboros/server_runtime.py")
+    assert "ws_heartbeat_loop" in server_source or "ws_heartbeat_loop" in helper_source
+    assert '"type": "heartbeat"' in server_source or '"type": "heartbeat"' in helper_source
+    assert "ws_ping_interval=20" in server_source
+    assert "ws_ping_timeout=20" in server_source
 
 
 def test_index_includes_reconnect_overlay():

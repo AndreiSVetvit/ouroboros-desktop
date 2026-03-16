@@ -1,4 +1,4 @@
-# Ouroboros v4.1.0 — Architecture & Reference
+# Ouroboros v4.2.0 — Architecture & Reference
 
 This document describes every component, page, button, API endpoint, and data flow.
 It is the single source of truth for how the system works. Keep it updated.
@@ -11,7 +11,7 @@ It is the single source of truth for how the system works. Keep it updated.
 User
   │
   ▼
-launcher.py (PyWebView)       ← macOS desktop window, immutable (bundle-only, not in git)
+launcher.py (PyWebView)       ← desktop window, immutable (bundle-only, not in git)
   │
   │  spawns subprocess
   ▼
@@ -21,7 +21,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on localhost:8765
   │
   ├── supervisor/              ← Background thread inside server.py
   │   ├── message_bus.py       ← Queue-based message bus (LocalChatBridge)
-  │   ├── workers.py           ← Multiprocessing worker pool (fork)
+  │   ├── workers.py           ← Multiprocessing worker pool (fork/spawn by platform)
   │   ├── state.py             ← Persistent state (state.json) with file locking
   │   ├── queue.py             ← Task queue management (PENDING/RUNNING lists)
   │   ├── events.py            ← Event dispatcher (worker→supervisor events)
@@ -30,7 +30,11 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on localhost:8765
   └── ouroboros/               ← Agent core (runs inside worker processes)
       ├── config.py            ← SSOT: paths, settings defaults, load/save, PID lock
       ├── agent.py             ← Task orchestrator
-      ├── loop.py              ← LLM tool loop (send→call tools→repeat)
+      ├── agent_startup_checks.py ← Startup verification and health checks
+      ├── agent_task_pipeline.py  ← Task execution pipeline orchestration
+      ├── loop.py              ← High-level LLM tool loop
+      ├── loop_llm_call.py     ← Single-round LLM call + usage accounting
+      ├── loop_tool_execution.py ← Tool dispatch and tool-result handling
       ├── pricing.py           ← Model pricing, cost estimation, usage events
       ├── llm.py               ← OpenRouter API client
       ├── safety.py            ← Dual-layer LLM security supervisor
@@ -38,11 +42,19 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on localhost:8765
       ├── consolidator.py      ← Block-wise dialogue consolidation (dialogue_blocks.json)
       ├── memory.py            ← Scratchpad, identity, chat history
       ├── context.py           ← LLM context builder (public API for consciousness)
+      ├── context_compaction.py ← Context trimming and summarization helpers
+      ├── local_model.py       ← Local LLM lifecycle (llama-cpp-python)
+      ├── local_model_api.py   ← Local model HTTP endpoints
+      ├── local_model_autostart.py ← Local model startup helper
       ├── review.py            ← Code collection, complexity metrics, full-codebase review
       ├── owner_inject.py      ← Per-task user message mailbox (compat module name)
+      ├── reflection.py        ← Execution reflection and pattern capture
+      ├── server_runtime.py    ← Server startup and WebSocket liveness helpers
+      ├── tool_policy.py       ← Tool access policy and gating
+      ├── utils.py             ← Shared utilities
       ├── world_profiler.py    ← System profile generator (WORLD.md)
       ├── tools/               ← Auto-discovered tool plugins
-      └── ...
+      └── compat.py            ← Cross-platform process/path/locking helpers
 ```
 
 ### Two-process model
@@ -106,7 +118,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on localhost:8765
 │   │   ├── supervisor.jsonl ← Supervisor-level events
 │   │   └── task_reflections.jsonl ← Execution reflections (process memory)
 │   └── archive/            ← Rotated logs, rescue snapshots
-└── ouroboros.pid           ← PID lock file (fcntl.flock — auto-released on crash)
+└── ouroboros.pid           ← PID lock file (platform lock — auto-released on crash)
 ```
 
 ---
@@ -167,7 +179,7 @@ Navigation is a left sidebar with 8 pages.
 - **Status badge** (top-right): "Online" (green) / "Thinking..." (amber pulse) / "Reconnecting..." (red).
   Driven by WebSocket connection state and typing events.
 - **Message input**: textarea + send button. Shift+Enter for newline, Enter to send.
-- **Messages**: user bubbles (right, green-tinted) and assistant bubbles (left, crimson). Assistant messages render markdown.
+- **Messages**: user bubbles (right, blue-tinted) and assistant bubbles (left, crimson). Assistant messages render markdown.
 - **Timestamps**: smart relative formatting (today: "HH:MM", yesterday: "Yesterday, HH:MM", older: "Mon DD, HH:MM"). Shown on hover.
 - **Progress messages**: background consciousness thinking shown as dimmed bubbles with 💬 prefix.
 - **Typing indicator**: animated "thinking dots" bubble appears when the agent is processing.
@@ -201,7 +213,7 @@ Navigation is a left sidebar with 8 pages.
   Backed by `OUROBOROS_REVIEW_MODELS`.
 - **Review Enforcement**: `Advisory` or `Blocking` for pre-commit review behavior.
   Backed by `OUROBOROS_REVIEW_ENFORCEMENT`. Review always runs in both modes.
-- **Runtime**: Max Workers, Budget ($), Soft/Hard Timeout.
+- **Runtime**: Max Workers, Budget ($), Tool Timeout, Soft/Hard Timeout.
 - **GitHub**: Token + Repo (for remote sync).
 - **Save Settings** button → POST `/api/settings`. Applies to env immediately.
   Budget changes take effect immediately; model/worker changes need restart.
@@ -421,7 +433,7 @@ the constitutional guard is that the file itself must remain non-deletable.
 - LLM extracts durable insights into knowledge base topics, compresses oldest blocks
 - Falls back to flat-file mode for pre-migration scratchpads
 - Writes knowledge files to `memory/knowledge/`, rebuilds `index-full.md`
-- Uses `fcntl` file lock to serialize concurrent calls
+- Uses platform-aware file locking to serialize concurrent calls
 - Runs in a daemon thread (same pattern as dialogue consolidation)
 
 ### Execution reflection (reflection.py)
@@ -511,7 +523,7 @@ Settings file: `~/Ouroboros/data/settings.json`. File-locked for concurrent acce
 | OUROBOROS_BG_WAKEUP_MAX | 7200 | Max wakeup interval (seconds) |
 | OUROBOROS_EVO_COST_THRESHOLD | 0.10 | Min cost per evolution cycle |
 | LOCAL_MODEL_PORT | 8766 | Port for local llama-cpp server |
-| LOCAL_MODEL_CHAT_FORMAT | chatml-function-calling | Chat format for local model |
+| LOCAL_MODEL_CHAT_FORMAT | "" | Chat format for local model (`""` = auto-detect) |
 | GITHUB_TOKEN | "" | Optional. GitHub PAT for remote sync |
 | GITHUB_REPO | "" | Optional. GitHub repo (owner/name) for sync |
 
